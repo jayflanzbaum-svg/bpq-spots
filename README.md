@@ -58,8 +58,9 @@ LIVE SPOTS-15minutes  Grid:EL96
    ```
    APPLICATION 4,SPOTS,C 7 HOST 0 S,MYCALL-17,NODESPT,255
    ```
-   `C 7` is your Telnet port number; `HOST 0` is the CMDPORT position; the
-   `S` flag makes BPQ send the connecting user's callsign to the app.
+   `C 7` is your Telnet port number; `HOST 0` is the CMDPORT position; `S`
+   returns the user to the node prompt when the app exits. BPQ sends the
+   connecting user's callsign to the app automatically.
 4. Restart BPQ32, start the app (a startup batch file or a Windows Terminal
    tab works well), and type `SPOTS` at your node prompt.
 
