@@ -32,6 +32,8 @@ import gc
 import json
 import math
 import os
+import re
+import textwrap
 import threading
 import time
 from collections import Counter
@@ -52,7 +54,7 @@ except Exception:
 # -----------------------------
 
 WINDOW_MINUTES_DEFAULT = 15
-WINDOW_LABEL = "15minutes"
+WINDOW_LABEL = "15 min"
 MILES_ROUND_TO_DEFAULT = 10
 
 # User requested: fixed radius, no RAD command
@@ -63,6 +65,9 @@ DEFAULT_CONFIG = {
     "storage": {"user_db_file": "spots_users.json"},
     "window_minutes": WINDOW_MINUTES_DEFAULT,
     "bands_glance": ["80m", "40m", "30m", "20m", "17m", "15m", "12m", "10m", "6m", "2m"],
+    # Terminal width to fold output at, and whether the menu follows every
+    # reply. See BPQ-Node/NODE-APP-STYLE.md; width 0 disables folding.
+    "display": {"width": 42, "menu_every_reply": False},
     "miles_round_to": MILES_ROUND_TO_DEFAULT,
     "pskreporter": {
         "ingest": "mqtt",
@@ -90,18 +95,28 @@ DEFAULT_CONFIG = {
 
 CONFIG_FILE = "spots_config.json"
 
-MENU_LINE = "<ENTER> | GRID <FM19ab> | CLEAR | ANALYZE <band> | HELP | QUIT\r\n"
+# Grouped one purpose per line, <ENTER> first and HELP | QUIT last, inside 42
+# columns - see BPQ-Node/NODE-APP-STYLE.md.
+MENU_LINE = ("<ENTER> | GRID <FM19ab> | CLEAR\r\n"
+             "ANALYZE <band> | HELP | QUIT\r\n")
 
+# Two columns inside 42: a 15-wide command field, then the gloss.
 HELP_TEXT = (
     "Commands:\r\n"
-    "  (Enter)        -> refresh glance\r\n"
-    "  SPOTS          -> refresh glance\r\n"
-    "  GRID <FM19ab>  -> set grid for this user\r\n"
-    "  CLEAR          -> clears grid (forces prompt next refresh / next connect)\r\n"
-    "  ANALYZE <band> -> analysis for band  (alias: A <band>)\r\n"
-    "  HELP           -> show commands\r\n"
-    "  Q / BYE / EXIT -> exit\r\n"
+    "  (Enter)        refresh the glance\r\n"
+    "  SPOTS          refresh the glance\r\n"
+    "  GRID <FM19ab>  set your grid\r\n"
+    "  CLEAR          forget your grid\r\n"
+    "  ANALYZE <band> analyse one band\r\n"
+    "  A <band>       same, shorter\r\n"
+    "  HELP           show commands\r\n"
+    "  Q / BYE / NODE exit\r\n"
 )
+
+# House vocabulary, identical in all four apps. NODE matters: it is what a BPQ
+# user types to get back to the node, and this app used to ignore it.
+EXIT_WORDS = ("Q", "QUIT", "EXIT", "BYE", "NODE")
+HELP_WORDS = ("HELP", "?")
 
 BAND_ALIASES = {
     "80": "80m", "40": "40m", "30": "30m", "20": "20m", "17": "17m", "15": "15m", "12": "12m", "10": "10m", "6": "6m", "2": "2m",
@@ -113,6 +128,48 @@ BAND_ALIASES = {
 # -----------------------------
 
 _grid_ll_cache: Dict[str, Optional[Tuple[float, float]]] = {}
+
+OUT_WIDTH = 42
+MENU_EVERY = False
+
+
+def wrap_out(text: str, width: int) -> str:
+    """Fold over-long lines at word boundaries for a narrow terminal.
+
+    A phone client is about 43 columns, so anything wider folds mid-word.
+    Lines already inside the width pass through untouched, which is what keeps
+    the glance and path tables in column. See BPQ-Node/NODE-APP-STYLE.md.
+    """
+    if width <= 0 or not text:
+        return text
+    out = []
+    for raw in text.replace("\r\n", "\n").splitlines(keepends=True):
+        end = "\n" if raw.endswith("\n") else ""
+        body = raw[:-1] if end else raw
+        if len(body) <= width:
+            out.append(body + end)
+            continue
+        lead = body[:len(body) - len(body.lstrip(" "))]
+        folded = textwrap.wrap(body.strip(), width=width,
+                               initial_indent=lead,
+                               subsequent_indent=lead or "  ",
+                               break_long_words=True, break_on_hyphens=False)
+        out.append("\n".join(folded or [body]) + end)
+    return "".join(out)
+
+
+def send(writer: asyncio.StreamWriter, text: str) -> None:
+    """The one place bytes leave this app.
+
+    Output used to go straight to writer.write() in sixteen places, so there
+    was nowhere to fold or strip control characters. Unlike WX and
+    RepeaterSearch this app is not on a TRANS connection, so it keeps CRLF
+    rather than converting to bare CR.
+    """
+    body = wrap_out(text, OUT_WIDTH).replace("\r\n", "\n")
+    body = re.sub(r"[^\x09\x0a\x20-\x7e]", "", body)
+    writer.write(body.replace("\n", "\r\n").encode("utf-8", "ignore"))
+
 
 def grid_to_latlon(grid: str) -> Optional[Tuple[float, float]]:
     """Return (lat, lon) center of Maidenhead grid (4 or 6 chars). Cached."""
@@ -321,13 +378,14 @@ def make_glance_option2(grid: str, counts: Dict[str, int], bands: List[str]) -> 
         pairs.append((left, right))
         i += 2
 
+    # Two spaces between columns with the counts right-aligned, so the numbers
+    # form a column the eye can run down. "80m:12  | 40m:3" did not.
+    lines.append(f"  {'BAND':<5}{'SPOTS':>5}    {'BAND':<5}{'SPOTS':>5}")
     for left, right in pairs:
-        ltxt = f"{left}:{counts.get(left, 0)}"
+        row = f"  {left:<5}{counts.get(left, 0):>5}"
         if right:
-            rtxt = f"{right}:{counts.get(right, 0)}"
-            lines.append(f"{ltxt:<7} | {rtxt}")
-        else:
-            lines.append(ltxt)
+            row += f"    {right:<5}{counts.get(right, 0):>5}"
+        lines.append(row)
 
     return "\r\n".join(lines) + "\r\n"
 
@@ -396,8 +454,9 @@ def analyze_band(index: SpotIndex, user_grid: str, radius_mi: int, band_in: str,
     out.append(f"ANALYZE {band} ({WINDOW_LABEL}) Grid:{user_grid}")
     out.append(f"Synopsis: {' '.join(bits)}")
     out.append("Top paths:")
+    out.append(f"  {'GRID':<6} {'MI':>6}  {'SPOTS':>6}")
     for sg4, miles_r, hits in top:
-        out.append(f"  {sg4}  {miles_r}mi  x{hits}")
+        out.append(f"  {sg4:<6} {miles_r:>6}  {hits:>6}")
     return "\r\n".join(out) + "\r\n"
 
 # -----------------------------
@@ -513,6 +572,20 @@ def start_maintenance(index: SpotIndex) -> None:
 # Config load + upgrade
 # -----------------------------
 
+def apply_display_config(cfg: Dict) -> None:
+    """Adopt display.width / display.menu_every_reply from config.
+
+    A typo in either must not stop the node coming up, so both fall back.
+    """
+    global OUT_WIDTH, MENU_EVERY
+    d = cfg.get("display") or {}
+    try:
+        OUT_WIDTH = int(d.get("width", OUT_WIDTH))
+    except (TypeError, ValueError):
+        print(f"[CFG] display.width unreadable - keeping {OUT_WIDTH}.")
+    MENU_EVERY = bool(d.get("menu_every_reply", MENU_EVERY))
+
+
 def load_and_upgrade_config() -> Dict:
     cfg_path = Path(CONFIG_FILE)
     if not cfg_path.exists():
@@ -521,6 +594,15 @@ def load_and_upgrade_config() -> Dict:
         return DEFAULT_CONFIG
 
     cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+
+    # A config written before display settings existed simply has none, so
+    # fill them from the defaults rather than making the sysop edit the file.
+    for k, v in DEFAULT_CONFIG.items():
+        if k not in cfg:
+            cfg[k] = v
+        elif isinstance(v, dict):
+            for kk, vv in v.items():
+                cfg[k].setdefault(kk, vv)
 
     try:
         mqtt = cfg.get("pskreporter", {}).get("mqtt", {})
@@ -540,7 +622,8 @@ def load_and_upgrade_config() -> Dict:
 # -----------------------------
 
 async def prompt_for_grid(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> Optional[str]:
-    writer.write(b"LIVE SPOTS needs your grid.\r\nEnter GRID (4-6 chars, e.g. FM19 or FM19ab) or Q:\r\n> ")
+    send(writer, "LIVE SPOTS needs your grid.\r\n"
+                 "Enter a grid (FM19 or FM19ab), or Q:\r\n> ")
     await writer.drain()
     try:
         line = await reader.readline()
@@ -549,15 +632,21 @@ async def prompt_for_grid(reader: asyncio.StreamReader, writer: asyncio.StreamWr
     if not line:
         return None
     ans = line.decode("utf-8", "ignore").strip()
-    if ans.upper() in ("Q", "QUIT", "EXIT", "BYE"):
+    if ans.upper() in EXIT_WORDS:
         return None
     return ans
 
-async def show_glance_and_menu(index: SpotIndex, writer: asyncio.StreamWriter, grid: str, cfg: Dict) -> None:
-    counts = counts_near_user(index, grid, FIXED_RADIUS_MI, cfg["bands_glance"], int(cfg["window_minutes"]))
-    writer.write(make_glance_option2(grid, counts, cfg["bands_glance"]).encode("utf-8", "ignore"))
-    writer.write(MENU_LINE.encode("utf-8", "ignore"))
-    writer.write(b"> ")
+async def show_glance(index: SpotIndex, writer: asyncio.StreamWriter, grid: str,
+                      cfg: Dict, menu: bool = False) -> None:
+    """The glance, and the menu only when it is actually wanted.
+
+    It used to print the four-line menu after every glance, which buried the
+    numbers it had just produced - see BPQ-Node/NODE-APP-STYLE.md.
+    """
+    counts = counts_near_user(index, grid, FIXED_RADIUS_MI, cfg["bands_glance"],
+                              int(cfg["window_minutes"]))
+    send(writer, make_glance_option2(grid, counts, cfg["bands_glance"]))
+    send(writer, "\r\n" + (MENU_LINE if (menu or MENU_EVERY) else "") + "> ")
     await writer.drain()
 
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
@@ -583,7 +672,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 pass
             return
         if not userdb.set_grid(callsign, ans):
-            writer.write(b"Invalid grid. Bye.\r\n")
+            send(writer, "Invalid grid. 73!\r\n")
             await writer.drain()
             try:
                 writer.close()
@@ -593,7 +682,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         grid = userdb.get_grid(callsign)
 
     grid = grid or "????"
-    await show_glance_and_menu(index, writer, grid, cfg)
+    await show_glance(index, writer, grid, cfg, menu=True)
 
     while True:
         try:
@@ -604,6 +693,9 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             break
 
         cmdline = raw.decode("utf-8", "ignore").strip()
+        # A blank line under the command the operator just typed, so the
+        # answer reads as a separate block. See NODE-APP-STYLE.md.
+        send(writer, "\r\n")
 
         if not cmdline or cmdline.upper() == "SPOTS":
             grid = userdb.get_grid(callsign)
@@ -612,39 +704,45 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 if not ans:
                     break
                 if not userdb.set_grid(callsign, ans):
-                    writer.write(b"Invalid grid. Try again later.\r\n> ")
+                    send(writer, "Invalid grid. Example: FM19 or FM19ab\r\n> ")
                     await writer.drain()
                     continue
                 grid = userdb.get_grid(callsign)
-            await show_glance_and_menu(index, writer, grid or "????", cfg)
+            await show_glance(index, writer, grid or "????", cfg)
             continue
 
         parts = cmdline.split()
         op = parts[0].upper()
 
-        if op in ("Q", "QUIT", "EXIT", "BYE"):
+        if op in EXIT_WORDS:
+            send(writer, "73!\r\n")
+            await writer.drain()
             break
 
-        if op == "HELP":
-            writer.write(HELP_TEXT.encode("utf-8", "ignore"))
-            writer.write(b"> ")
+        if op in HELP_WORDS:
+            send(writer, HELP_TEXT + "\r\n" + MENU_LINE + "> ")
+            await writer.drain()
+            continue
+
+        if op == "GRID" and len(parts) < 2:
+            send(writer, "Usage: GRID <FM19ab>, e.g. GRID EL96xl\r\n> ")
             await writer.drain()
             continue
 
         if op == "GRID" and len(parts) >= 2:
             if userdb.set_grid(callsign, parts[1]):
                 grid = userdb.get_grid(callsign) or "????"
-                writer.write(f"OK Grid:{grid}\r\n".encode("utf-8", "ignore"))
-                await show_glance_and_menu(index, writer, grid, cfg)
+                send(writer, f"OK Grid:{grid}\r\n")
+                await show_glance(index, writer, grid, cfg)
             else:
-                writer.write(b"Invalid grid. Example: FM19 or FM19ab\r\n> ")
+                send(writer, "Invalid grid. Example: FM19 or FM19ab\r\n> ")
                 await writer.drain()
             continue
 
         if op in ("CLEAR", "CEAR"):
             userdb.clear(callsign)
-            writer.write(b"OK Grid cleared. You will be prompted next time.\r\n")
-            writer.write(b"> ")
+            send(writer, "OK Grid cleared. You will be asked for one "
+                         "next time.\r\n> ")
             await writer.drain()
             continue
 
@@ -655,7 +753,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 if not ans:
                     break
                 if not userdb.set_grid(callsign, ans):
-                    writer.write(b"Invalid grid.\r\n> ")
+                    send(writer, "Invalid grid. Example: FM19 or FM19ab\r\n> ")
                     await writer.drain()
                     continue
                 grid = userdb.get_grid(callsign)
@@ -668,12 +766,19 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 miles_round_to=int(cfg["miles_round_to"]),
                 window_minutes=int(cfg["window_minutes"]),
             )
-            writer.write(out.encode("utf-8", "ignore"))
-            writer.write(b"> ")
+            send(writer, out + "\r\n> ")
             await writer.drain()
             continue
 
-        writer.write(b"Unknown. Try HELP.\r\n> ")
+        if op in ("ANALYZE", "A"):
+            send(writer, "Usage: ANALYZE <band>, e.g. ANALYZE 20m\r\n> ")
+            await writer.drain()
+            continue
+
+        # Same wording as the other apps, and it quotes what it did not
+        # understand rather than just saying "Unknown".
+        send(writer, f"'{cmdline[:20]}' is not a command.\r\n"
+                     + "\r\n" + MENU_LINE + "> ")
         await writer.drain()
 
     try:
@@ -688,6 +793,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
 async def run_server():
     cfg = load_and_upgrade_config()
+    apply_display_config(cfg)
 
     userdb = UserDB(cfg["storage"]["user_db_file"])
     index = SpotIndex(window_minutes=int(cfg["window_minutes"]))
