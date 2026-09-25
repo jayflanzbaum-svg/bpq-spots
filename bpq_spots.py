@@ -631,10 +631,25 @@ async def prompt_for_grid(reader: asyncio.StreamReader, writer: asyncio.StreamWr
         return None
     if not line:
         return None
-    ans = line.decode("utf-8", "ignore").strip()
+    ans = apply_line_edits(line.decode("utf-8", "ignore")).strip()
     if ans.upper() in EXIT_WORDS:
         return None
     return ans
+
+
+def apply_line_edits(s: str) -> str:
+    """Apply backspace / DEL the way a terminal would, then drop other control
+    characters. A phone client that re-flows a word at its wrap column sends
+    'neptune' BS BS 'ne'; kept raw, that read as 'neptunene'. Same helper in
+    every node app (NODE-APP-STYLE.md s5)."""
+    out = []
+    for ch in s:
+        if ch in "\x08\x7f":
+            if out:
+                out.pop()
+        elif ch >= " " or ch == "\t":
+            out.append(ch)
+    return "".join(out)
 
 async def show_glance(index: SpotIndex, writer: asyncio.StreamWriter, grid: str,
                       cfg: Dict, menu: bool = False) -> None:
@@ -660,7 +675,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             pass
         return
 
-    callsign = first.decode("utf-8", "ignore").strip().upper() or "UNKNOWN"
+    callsign = apply_line_edits(first.decode("utf-8", "ignore")).strip().upper() or "UNKNOWN"
 
     grid = userdb.get_grid(callsign)
     if not grid:
@@ -692,7 +707,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         if not raw:
             break
 
-        cmdline = raw.decode("utf-8", "ignore").strip()
+        cmdline = apply_line_edits(raw.decode("utf-8", "ignore")).strip()
         # A blank line under the command the operator just typed, so the
         # answer reads as a separate block. See NODE-APP-STYLE.md.
         send(writer, "\r\n")
