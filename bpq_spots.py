@@ -368,26 +368,23 @@ def counts_near_user(index: SpotIndex, user_grid: str, radius_mi: int, bands: Li
     return {b: len(per_band_senders[b]) for b in bands}
 
 def make_glance_option2(grid: str, counts: Dict[str, int], bands: List[str]) -> str:
-    lines: List[str] = []
-    lines.append(f"LIVE SPOTS-{WINDOW_LABEL}  Grid:{grid}")
+    """From Past 15 Min, Grid EL96XL
+    BAND/SPOT COUNT
+    80m/0    | 40m/224
+    30m/147  | 20m/540
 
-    pairs = []
-    i = 0
-    while i < len(bands):
-        left = bands[i]
-        right = bands[i + 1] if i + 1 < len(bands) else None
-        pairs.append((left, right))
-        i += 2
-
-    # Two spaces between columns with the counts right-aligned, so the numbers
-    # form a column the eye can run down. "80m:12  | 40m:3" did not.
-    lines.append(f"  {'BAND':<5}{'SPOTS':>5}    {'BAND':<5}{'SPOTS':>5}")
-    for left, right in pairs:
-        row = f"  {left:<5}{counts.get(left, 0):>5}"
-        if right:
-            row += f"    {right:<5}{counts.get(right, 0):>5}"
-        lines.append(row)
-
+    Each cell is band/count, two per row. The left cells are padded to the
+    widest one so the "|" and the right column line up down the screen."""
+    lines: List[str] = [f"From Past {WINDOW_LABEL.title()}, Grid {grid}",
+                        "BAND/SPOT COUNT"]
+    cells = [f"{b}/{counts.get(b, 0)}" for b in bands]
+    lefts, rights = cells[0::2], cells[1::2]
+    width = max((len(c) for c in lefts), default=0)
+    for i, left in enumerate(lefts):
+        row = left.ljust(width)
+        if i < len(rights):
+            row += " | " + rights[i]
+        lines.append(row.rstrip())
     return "\r\n".join(lines) + "\r\n"
 
 def analyze_band(index: SpotIndex, user_grid: str, radius_mi: int, band_in: str, miles_round_to: int, window_minutes: int) -> str:
