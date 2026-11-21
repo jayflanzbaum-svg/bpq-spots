@@ -202,6 +202,74 @@ def grid_to_latlon(grid: str) -> Optional[Tuple[float, float]]:
     _grid_ll_cache[g] = (lat, lon)
     return (lat, lon)
 
+def latlon_to_grid4(lat: float, lon: float) -> str:
+    lon, lat = lon + 180.0, lat + 90.0
+    if not (0 <= lon < 360 and 0 <= lat < 180):
+        return ""
+    return (chr(65 + int(lon // 20)) + chr(65 + int(lat // 10))
+            + str(int((lon % 20) // 2)) + str(int(lat % 10)))
+
+
+# Grid square -> the best-known town in it, from places.tsv (GeoNames towns
+# of 15,000+, built by tools/build_places.py). A grid like EN61 means little
+# to most people; "Chicago IL" does.
+PLACES_FILE = Path(__file__).resolve().parent / "places.tsv"
+_places: Optional[Dict[str, Tuple[str, float, float, int]]] = None
+
+
+def _load_places() -> Dict[str, Tuple[str, float, float, int]]:
+    global _places
+    if _places is not None:
+        return _places
+    _places = {}
+    try:
+        with open(PLACES_FILE, encoding="utf-8") as f:
+            for line in f:
+                c = line.rstrip("\n").split("\t")
+                if len(c) != 5:
+                    continue
+                lat, lon, pop = float(c[2]), float(c[3]), int(c[4])
+                g = latlon_to_grid4(lat, lon)
+                best = _places.get(g)
+                if g and (best is None or pop > best[3]):
+                    _places[g] = (f"{c[0]} {c[1]}", lat, lon, pop)
+        print(f"[PLACES] {len(_places)} grid squares named from {PLACES_FILE.name}")
+    except (OSError, ValueError) as e:
+        print(f"[PLACES] {PLACES_FILE} unreadable ({e}) - showing grids instead.")
+    return _places
+
+
+def grid_place(grid4: str) -> str:
+    """The biggest town in the grid square, e.g. "Chicago IL"; with none,
+    the nearest big town in a neighbouring square as "nr Billings MT";
+    failing that (open ocean, say), the grid itself."""
+    g = (grid4 or "").upper()[:4]
+    places = _load_places()
+    if g in places:
+        return places[g][0]
+    ll = grid_to_latlon(g)
+    if ll is None:
+        return g
+    near = []
+    for dlat in (-1, 0, 1):
+        for dlon in (-2, 0, 2):
+            hit = places.get(latlon_to_grid4(ll[0] + dlat, ll[1] + dlon))
+            if hit:
+                near.append((haversine_miles(ll[0], ll[1], hit[1], hit[2]), hit[0]))
+    return f"nr {min(near)[1]}" if near else g
+
+
+def fit_place(label: str, width: int) -> str:
+    """Shorten the town, never the state/country: "Saratoga Springs NY"
+    becomes "Saratoga Spring NY" rather than "Saratoga Springs N"."""
+    if len(label) <= width:
+        return label
+    town, _, region = label.rpartition(" ")
+    if not town:
+        return label[:width]
+    return town[:max(1, width - len(region) - 1)].rstrip() + " " + region
+
+
 def haversine_miles(lat1, lon1, lat2, lon2) -> float:
     R_km = 6371.0
     dlat = math.radians(lat2 - lat1)
@@ -468,9 +536,9 @@ def analyze_band(index: SpotIndex, user_grid: str, radius_mi: int, band_in: str,
     out.append(f"ANALYZE {band} ({WINDOW_LABEL}) Grid:{user_grid}")
     out.append(f"Synopsis: {' '.join(bits)}")
     out.append("Top paths:")
-    out.append(f"  {'GRID':<6} {'DIR':<3} {'MILES':>6}  {'SPOTS':>5}")
+    out.append(f"  {'PLACE':<18} {'DIR':<3} {'MILES':>5} {'SPOTS':>5}")
     for sg4, miles_r, hits, way in top:
-        out.append(f"  {sg4:<6} {way:<3} {miles_r:>6}  {hits:>5}")
+        out.append(f"  {fit_place(grid_place(sg4), 18):<18} {way:<3} {miles_r:>5} {hits:>5}")
     return "\r\n".join(out) + "\r\n"
 
 # -----------------------------

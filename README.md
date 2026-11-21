@@ -8,13 +8,20 @@ and get a live glance of how many unique stations were spotted on each band
 near them in the last 15 minutes — plus per-band propagation analysis.
 
 ```
-LIVE SPOTS-15minutes  Grid:EL96
-80m:12  | 40m:47
-30m:9   | 20m:83
-17m:21  | 15m:34
-12m:8   | 10m:26
-6m:3    | 2m:1
-<ENTER> | GRID <FM19ab> | CLEAR | ANALYZE <band> | HELP | QUIT
+From Past 15 Min, Grid EL96XL
+BAND/SPOTS
+80m/0|40m/8|30m/3|20m/23|17m/1|15m/7|12m/1
+10m/15|6m/0|2m/0
+```
+
+`ANALYZE 20m` names where the signals come from, with direction and miles:
+
+```
+Top paths:
+  PLACE              DIR MILES SPOTS
+  Baltimore MD       N     920     4
+  Dallas TX          NW   1100     3
+  Bogota Colombia    S    1590     2
 ```
 
 ## Features
@@ -24,7 +31,8 @@ LIVE SPOTS-15minutes  Grid:EL96
   of the user's grid
 - **Per-user memory** — each callsign's grid is remembered between connects
 - **ANALYZE <band>** — synopsis (regional vs long-haul vs intercontinental,
-  rough MUF read) plus the top paths with distances
+  rough MUF read) plus the top paths: the biggest town in each grid square
+  (`Chicago IL` rather than `EN61`), compass direction and miles
 - Compact deduplicated in-memory index with background pruning — runs for
   weeks without growing
 - RF-friendly output: short lines, plain ASCII
@@ -68,6 +76,10 @@ LIVE SPOTS-15minutes  Grid:EL96
 
 Spot data comes from [PSKReporter](https://pskreporter.info/)'s MQTT feed.
 Please be a good citizen of their free service.
+
+Place names come from [GeoNames](https://www.geonames.org/) (towns of
+15,000+, CC BY 4.0), reduced to `places.tsv` by `tools/build_places.py`.
+Without `places.tsv` the app shows grid squares instead.
 
 ## License
 
