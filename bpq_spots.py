@@ -211,6 +211,19 @@ def haversine_miles(lat1, lon1, lat2, lon2) -> float:
     km = R_km * c
     return km * 0.621371
 
+_COMPASS = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+
+
+def compass(lat1, lon1, lat2, lon2) -> str:
+    """Initial great-circle bearing from point 1 to point 2, as N/NE/E..."""
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dl = math.radians(lon2 - lon1)
+    y = math.sin(dl) * math.cos(p2)
+    x = math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl)
+    deg = (math.degrees(math.atan2(y, x)) + 360) % 360
+    return _COMPASS[int((deg + 22.5) // 45) % 8]
+
+
 def round_miles(x: float, nearest: int) -> int:
     if nearest <= 0:
         return int(round(x))
@@ -367,24 +380,27 @@ def counts_near_user(index: SpotIndex, user_grid: str, radius_mi: int, bands: Li
 
     return {b: len(per_band_senders[b]) for b in bands}
 
-def make_glance_option2(grid: str, counts: Dict[str, int], bands: List[str]) -> str:
+def make_glance_option2(grid: str, counts: Dict[str, int], bands: List[str],
+                        width: int = 42) -> str:
     """From Past 15 Min, Grid EL96XL
-    BAND/SPOT COUNT
-    80m/0    | 40m/224
-    30m/147  | 20m/540
+    BAND/SPOTS
+    80m/0|40m/224|30m/147|20m/540|17m/186
+    15m/236|12m/61|10m/194|6m/1|2m/5
 
-    Each cell is band/count, two per row. The left cells are padded to the
-    widest one so the "|" and the right column line up down the screen."""
+    Cells run on as one list, wrapped between cells to fit `width`. Padded
+    columns only line up in a fixed-width font; the T-Deck and the phone
+    apps use proportional ones, so a list reads better than a fake table."""
     lines: List[str] = [f"From Past {WINDOW_LABEL.title()}, Grid {grid}",
-                        "BAND/SPOT COUNT"]
-    cells = [f"{b}/{counts.get(b, 0)}" for b in bands]
-    lefts, rights = cells[0::2], cells[1::2]
-    width = max((len(c) for c in lefts), default=0)
-    for i, left in enumerate(lefts):
-        row = left.ljust(width)
-        if i < len(rights):
-            row += " | " + rights[i]
-        lines.append(row.rstrip())
+                        "BAND/SPOTS"]
+    row = ""
+    for cell in (f"{b}/{counts.get(b, 0)}" for b in bands):
+        cand = f"{row}|{cell}" if row else cell
+        if row and width > 0 and len(cand) > width:
+            lines.append(row)
+            cand = cell
+        row = cand
+    if row:
+        lines.append(row)
     return "\r\n".join(lines) + "\r\n"
 
 def analyze_band(index: SpotIndex, user_grid: str, radius_mi: int, band_in: str, miles_round_to: int, window_minutes: int) -> str:
@@ -416,18 +432,18 @@ def analyze_band(index: SpotIndex, user_grid: str, radius_mi: int, band_in: str,
     if not by_sender_grid:
         return f"ANALYZE {band} ({WINDOW_LABEL}) Grid:{user_grid}\r\nNo data for this band in the last {WINDOW_LABEL}.\r\n"
 
-    items: List[Tuple[str, int, int]] = []
+    items: List[Tuple[str, int, int, str]] = []
     for sg4, hits in by_sender_grid.items():
         sg_ll = grid_to_latlon(sg4)
         if sg_ll is None:
             continue
         miles = haversine_miles(ug_ll[0], ug_ll[1], sg_ll[0], sg_ll[1])
         miles_r = round_miles(miles, miles_round_to)
-        items.append((sg4, miles_r, hits))
+        items.append((sg4, miles_r, hits, compass(ug_ll[0], ug_ll[1], sg_ll[0], sg_ll[1])))
     items.sort(key=lambda x: (x[2], x[1]), reverse=True)
     top = items[:5]
 
-    dists = [m for (_, m, _) in top]
+    dists = [m for (_, m, _, _) in top]
     regional = any(300 <= d <= 800 for d in dists)
     longhaul = any(d >= 2000 for d in dists)
     intercont = any(d >= 4000 for d in dists)
@@ -452,9 +468,9 @@ def analyze_band(index: SpotIndex, user_grid: str, radius_mi: int, band_in: str,
     out.append(f"ANALYZE {band} ({WINDOW_LABEL}) Grid:{user_grid}")
     out.append(f"Synopsis: {' '.join(bits)}")
     out.append("Top paths:")
-    out.append(f"  {'GRID':<6} {'MI':>6}  {'SPOTS':>6}")
-    for sg4, miles_r, hits in top:
-        out.append(f"  {sg4:<6} {miles_r:>6}  {hits:>6}")
+    out.append(f"  {'GRID':<6} {'DIR':<3} {'MILES':>6}  {'SPOTS':>5}")
+    for sg4, miles_r, hits, way in top:
+        out.append(f"  {sg4:<6} {way:<3} {miles_r:>6}  {hits:>5}")
     return "\r\n".join(out) + "\r\n"
 
 # -----------------------------
@@ -658,7 +674,7 @@ async def show_glance(index: SpotIndex, writer: asyncio.StreamWriter, grid: str,
     """
     counts = counts_near_user(index, grid, FIXED_RADIUS_MI, cfg["bands_glance"],
                               int(cfg["window_minutes"]))
-    send(writer, make_glance_option2(grid, counts, cfg["bands_glance"]))
+    send(writer, make_glance_option2(grid, counts, cfg["bands_glance"], OUT_WIDTH))
     send(writer, "\r\n" + (MENU_LINE if (menu or MENU_EVERY) else "") + "> ")
     await writer.drain()
 
