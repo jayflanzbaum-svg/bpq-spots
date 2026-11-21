@@ -452,23 +452,17 @@ def make_glance_option2(grid: str, counts: Dict[str, int], bands: List[str],
                         width: int = 42) -> str:
     """From Past 15 Min, Grid EL96XL
     BAND/SPOTS
-    80m/0|40m/224|30m/147|20m/540|17m/186
-    15m/236|12m/61|10m/194|6m/1|2m/5
+    80m/0
+    40m/224
+    ...
 
-    Cells run on as one list, wrapped between cells to fit `width`. Padded
-    columns only line up in a fixed-width font; the T-Deck and the phone
-    apps use proportional ones, so a list reads better than a fake table."""
+    One band per line. Padded columns only line up in a fixed-width font,
+    and the T-Deck and phone apps use proportional ones; a run-on list was
+    hard to read, so each band gets its own line. `width` is unused now and
+    kept so callers need not change."""
     lines: List[str] = [f"From Past {WINDOW_LABEL.title()}, Grid {grid}",
                         "BAND/SPOTS"]
-    row = ""
-    for cell in (f"{b}/{counts.get(b, 0)}" for b in bands):
-        cand = f"{row}|{cell}" if row else cell
-        if row and width > 0 and len(cand) > width:
-            lines.append(row)
-            cand = cell
-        row = cand
-    if row:
-        lines.append(row)
+    lines += [f"{b}/{counts.get(b, 0)}" for b in bands]
     return "\r\n".join(lines) + "\r\n"
 
 def analyze_band(index: SpotIndex, user_grid: str, radius_mi: int, band_in: str, miles_round_to: int, window_minutes: int) -> str:

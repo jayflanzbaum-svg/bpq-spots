@@ -10,8 +10,11 @@ near them in the last 15 minutes — plus per-band propagation analysis.
 ```
 From Past 15 Min, Grid EL96XL
 BAND/SPOTS
-80m/0|40m/8|30m/3|20m/23|17m/1|15m/7|12m/1
-10m/15|6m/0|2m/0
+80m/0
+40m/8
+30m/3
+20m/23
+...
 ```
 
 `ANALYZE 20m` names where the signals come from, with direction and miles:
