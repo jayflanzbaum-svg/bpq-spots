@@ -95,10 +95,11 @@ DEFAULT_CONFIG = {
 
 CONFIG_FILE = "spots_config.json"
 
-# Grouped one purpose per line, <ENTER> first and HELP | QUIT last, inside 42
+# Grouped one purpose per line, <ENTER> first and the ?/NODE hint last, inside 42
 # columns - see BPQ-Node/NODE-APP-STYLE.md.
 MENU_LINE = ("<ENTER> | GRID <FM19ab> | CLEAR\r\n"
-             "ANALYZE <band> | HELP | QUIT\r\n")
+             "ANALYZE <band>\r\n"
+             "[?=Commands, NODE=Back to Node]\r\n")
 
 # Two columns inside 42: a 15-wide command field, then the gloss.
 HELP_TEXT = (
